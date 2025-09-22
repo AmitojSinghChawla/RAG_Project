@@ -1,19 +1,25 @@
-import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
 
-# Load environment variables from .env file if present
-load_dotenv()
+load_dotenv(verbose=True)  # loads GOOGLE_API_KEY
 
-# Data and DB paths
-DATA_PATH = "data/"
-DB_PATH = "vectorstore/"
+# Initialize Gemini LLM
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.0-flash",
+    temperature=0
+)
 
-# Embedding model
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# Prompt template
+template = PromptTemplate(
+    template="Answer the following question: {question}?",
+    input_variables=["question"]
+)
 
-# Gemini setup
-GEMINI_MODEL = "gemini-1.5-flash"   # or gemini-1.5-pro if you need more accuracy
-GEMINI_API_KEY = os.getenv("AIzaSyAzUHUpWd0YFjJvnB8ZM5iSPbrj-ARedkg")
 
-if not GEMINI_API_KEY:
-    raise ValueError("❌ GOOGLE_API_KEY not found. Please set it in your .env file or environment variables.")
+# Combine as chain
+chain = template | llm
+
+# Test query
+result = chain.invoke({"question": "What is the capital of France?"})
+print(result.content)

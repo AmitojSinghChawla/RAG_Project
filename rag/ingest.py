@@ -106,14 +106,18 @@ def load_and_summarize(limit: int = None) -> List[Document]:
 
 def chunk_documents(docs: List[Document]) -> List[Document]:
     """
-    Split long summaries into smaller chunks (~800 chars with 100 overlap).
+    Split long summaries into smaller chunks (~10 00 chars with 100 overlap).
     """
     if not docs:
         print("❌ No documents to split. Exiting.")
         return []
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=100)
+
     chunks = splitter.split_documents(docs)
+
     print(f"✂️ Split {len(docs)} summaries into {len(chunks)} chunks")
     return chunks
 
