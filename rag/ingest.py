@@ -1,8 +1,7 @@
-# ingest_multimodal.py
-
 import os
 import glob
 import hashlib
+import asyncio
 from typing import List
 
 from langchain.schema import Document, HumanMessage
@@ -15,6 +14,7 @@ from unstructured.partition.pdf import partition_pdf
 from unstructured.partition.docx import partition_docx
 from unstructured.partition.text import partition_text
 
+
 # Ollama Multi-Modal LLM
 from langchain_ollama import ChatOllama
 
@@ -25,35 +25,35 @@ DB_PATH = "vectorstore/"
 llm = ChatOllama(model="bakllava", temperature=0)
 llm_text=ChatOllama(model="gemma:2b", temperature=0)
 
-def summarize_element(el, file: str) -> str:
-    """
-    Summarize a single element (text, table, image) using Ollama bakllava.
-    Always returns a string.
-    """
+# -------------------- Async summarization --------------------
+async def summarize_element_async(el, file: str) -> str:
+    """Summarize a single element (text, image) asynchronously."""
     try:
         if el.category.lower() == "image":
-            # Stub for images – currently not extracting raw image
             prompt = "Describe and summarize this image or chart in 2-3 sentences."
-            msg = HumanMessage(content=[
-                {"type": "text", "text": prompt}
-                # TODO: Add {"type": "image_url", "image_url": "file://path/to/extracted.png"}
-            ])
-            result = llm.invoke([msg])
+            msg = HumanMessage(content=[{"type": "text", "text": prompt}])
+            result = await llm.ainvoke([msg])
             return str(result.content)
         else:
-            # Handle text-like elements
             prompt = f"Summarize the following {el.category} in 2-3 sentences:\n{el.text}"
-            result = llm_text.invoke(prompt)
+            result = await llm_text.ainvoke(prompt)
             return str(result.content)
     except Exception as e:
         print(f"⚠️ Summarization failed for element in {os.path.basename(file)}: {e}")
         return ""
 
+async def summarize_elements(elements, file: str, max_concurrent: int = 8) -> List[str]:
+    """Run async summarization concurrently with limited concurrency."""
+    semaphore = asyncio.Semaphore(max_concurrent)
 
-def load_and_summarize(limit: int = None) -> List[Document]:
-    """
-    Load documents, summarize each element using Ollama, return as Document objects.
-    """
+    async def sem_summarize(el):
+        async with semaphore:
+            return await summarize_element_async(el, file)
+
+    tasks = [sem_summarize(el) for el in elements]
+    return await asyncio.gather(*tasks)
+
+async def load_and_summarize(limit: int = None) -> List[Document]:
     files = glob.glob(os.path.join(DATA_PATH, "*"))
     if limit:
         files = files[:limit]
@@ -63,8 +63,6 @@ def load_and_summarize(limit: int = None) -> List[Document]:
     for file in files:
         try:
             ext = os.path.splitext(file)[1].lower()
-
-            # Parse documents locally
             if ext == ".pdf":
                 elements = partition_pdf(file)
             elif ext == ".docx":
@@ -77,24 +75,19 @@ def load_and_summarize(limit: int = None) -> List[Document]:
 
             print(f"📂 Processing {os.path.basename(file)} with {len(elements)} elements...")
 
-            for i, el in enumerate(elements, start=1):
-                if (hasattr(el, "text") and el.text.strip()) or el.category.lower() == "image":
-                    summary = summarize_element(el, file)
-                    if not summary:
-                        continue
+            # Summarize all elements asynchronously
+            summaries = await summarize_elements(elements, file)
 
-                    # Stable doc_id
-                    doc_id = f"{os.path.basename(file)}_{el.category}_{hashlib.sha256(str(el).encode('utf-8')).hexdigest()[:16]}"
+            for i, (el, summary) in enumerate(zip(elements, summaries), start=1):
+                if not summary:
+                    continue
 
-                    summarized_docs.append(Document(
-                        page_content=summary,
-                        metadata={
-                            "source": file,
-                            "type": el.category,
-                            "doc_id": doc_id
-                        }
-                    ))
-                    print(f"   ✅ Summarized element {i}/{len(elements)} ({el.category})")
+                doc_id = f"{os.path.basename(file)}_{el.category}_{hashlib.sha256(str(el).encode('utf-8')).hexdigest()[:16]}"
+                summarized_docs.append(Document(
+                    page_content=summary,
+                    metadata={"source": file, "type": el.category, "doc_id": doc_id}
+                ))
+                print(f"   ✅ Summarized element {i}/{len(elements)} ({el.category})")
 
             print(f"✅ Finished {os.path.basename(file)} → {len(summarized_docs)} total summaries so far")
 
@@ -102,7 +95,6 @@ def load_and_summarize(limit: int = None) -> List[Document]:
             print(f"❌ Failed to process {file}: {e}")
 
     return summarized_docs
-
 
 def chunk_documents(docs: List[Document]) -> List[Document]:
     """
@@ -135,12 +127,13 @@ def embed_and_store(docs: List[Document]):
     print(f"✅ Stored {len(docs)} summarized chunks in Chroma DB at {DB_PATH}")
 
 
+# -------------------- Main --------------------
 if __name__ == "__main__":
-    # 1. Load documents and summarize elements
-    summaries = load_and_summarize(limit=10)
+    import asyncio
 
-    # 2. Chunk long summaries
-    chunks = chunk_documents(summaries)
+    async def main():
+        summaries = await load_and_summarize(limit=10)
+        chunks = chunk_documents(summaries)
+        embed_and_store(chunks)
 
-    # 3. Embed and store in ChromaDB
-    embed_and_store(chunks)
+    asyncio.run(main())
